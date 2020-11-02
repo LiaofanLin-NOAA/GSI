@@ -145,6 +145,16 @@ module obsmod
 !                       - moved obscounts(:) into obs_sensitivity.f90.
 !   2019-06-25  Hu       - add diag_radardbz for controling radar reflectivity
 !                               diag file
+!   2019-07-29  pondeca - add logical variable neutral_stability_windfact_2dvar
+!                         to turn on computation of 10m wind factor for near surface
+!                         winds using a simple, similarity theory-based approach
+!   2019-08-23  pondeca - add logical variable use_similarity_2dvar
+!                         to turn on computation of 10m wind factor for near surface
+!                         winds the mm5-based sfc model's similarity theory
+!  01-27-2020 Winterbottom Moved regression coeffcients for regional
+!                          model (e.g., HWRF) aircraft recon dynamic
+!                          observation error (DOE) specification to
+!                          GSI namelist level.  
 ! 
 ! Subroutines Included:
 !   sub init_obsmod_dflts   - initialize obs related variables to default values
@@ -385,6 +395,11 @@ module obsmod
 !   def netcdf_diag    - trigger netcdf diag-file output
 !   def l_wcp_cwm      - namelist logical whether to use operator that
 !                        includes cwm for both swcp and lwcp or not
+!   def neutral_stability_windfact_2dvar - logical, if .true., then use simple formula representing
+!                                          special case from similarity theory to compute the 10m-wind factor
+!   def use_similarity_2dvar - logical, if .true., then use similarity theory from mm5
+!                              sfc model to compute the 10m-wind factor
+!   def aircraft_recon - namelist logibal whether to use DOE for aircraft
 !
 ! attributes:
 !   langauge: f90
@@ -416,11 +431,13 @@ module obsmod
   public :: iout_oz,iout_co,dsis,ref_obs,obsfile_all,lobserver,perturb_obs,ditype,dsfcalc,dplat
   public :: time_window,dval,dtype,dfile,dirname,obs_setup,oberror_tune,offtime_data
   public :: lobsdiagsave,lobsdiag_forenkf,blacklst,hilbert_curve,lobskeep,time_window_max,sfcmodel,ext_sonde
+  public :: neutral_stability_windfact_2dvar
+  public :: use_similarity_2dvar
   public :: time_window_rad
   public :: perturb_fact,dtbduv_on,nsat1,obs_sub_comm,mype_diaghdr
   public :: lobsdiag_allocated
   public :: nloz_v8,nloz_v6,nloz_omi,nlco,nobskeep
-  public :: grids_dim,rmiss_single,nchan_total,mype_sst,mype_gps
+  public :: rmiss_single,nchan_total,mype_sst,mype_gps
   public :: mype_uv,mype_dw,mype_rw,mype_q,mype_tcp,mype_lag,mype_ps,mype_t
   public :: mype_pw,iout_rw,iout_dw,iout_sst,iout_pw,iout_t,iout_q,iout_tcp
   public :: iout_lag,iout_uv,iout_gps,iout_ps,iout_light,mype_light
@@ -464,6 +481,47 @@ module obsmod
   public :: netcdf_diag, binary_diag
 
   public :: l_wcp_cwm
+  public :: aircraft_recon
+
+  ! The following public variables are the coefficients that describe
+  ! the linear regression fits that are used to define the dynamic
+  ! observation error (DOE) specifications for all reconnissance
+  ! observations collected within hurricanes/tropical cyclones; these
+  ! apply only to the regional forecast models (e.g., HWRF); Henry
+  ! R. Winterbottom (henry.winterbottom@noaa.gov).
+
+  ! Observation types:
+
+  ! 1/236: HDOB (e.g., flight-level) observations.
+
+  ! 1/237: Dropsonde observations.
+
+  ! 292: SFMR observations.
+  
+  ! The following correspond to the specific humidity (q)
+  ! observations:
+  
+  public :: q_doe_a_136
+  public :: q_doe_a_137
+  public :: q_doe_b_136
+  public :: q_doe_b_137
+
+  ! The following correspond to the temperature (t) observations:
+
+  public :: t_doe_a_136
+  public :: t_doe_a_137
+  public :: t_doe_b_136
+  public :: t_doe_b_137
+
+  ! The following correspond to the wind (uv) observations:
+  
+  public :: uv_doe_a_236
+  public :: uv_doe_a_237
+  public :: uv_doe_a_292
+  public :: uv_doe_b_236
+  public :: uv_doe_b_237
+  public :: uv_doe_b_292
+  
 
   interface obsmod_init_instr_table
           module procedure init_instr_table_
@@ -497,7 +555,7 @@ module obsmod
   real(r_kind) perturb_fact,time_window_max,time_offset,time_window_rad
   real(r_kind),dimension(50):: dmesh
 
-  integer(i_kind) grids_dim,nchan_total,ianldate
+  integer(i_kind) nchan_total,ianldate
   integer(i_kind) ndat,ndat_types,ndat_times,nprof_gps
   integer(i_kind) lunobs_obs,nloz_v6,nloz_v8,nobskeep,nloz_omi
   integer(i_kind) nlco,use_limit
@@ -571,10 +629,46 @@ module obsmod
   logical ext_sonde
   logical lrun_subdirs
   logical l_foreaft_thin
+  logical neutral_stability_windfact_2dvar
+  logical use_similarity_2dvar
 
   logical l_wcp_cwm
+  logical aircraft_recon
 
   character(len=*),parameter:: myname='obsmod'
+
+  ! The following variable declarations pertain to the coefficients
+  ! that describe the linear regression fits that are used to define
+  ! the dynamic observation error (DOE) specifications for all
+  ! reconnissance observations collected within hurricanes/tropical
+  ! cyclones; these apply only to the regional forecast models (e.g.,
+  ! HWRF); Henry R. Winterbottom (henry.winterbottom@noaa.gov).
+
+  ! Observation types:
+
+  ! 1/236: HDOB (e.g., flight-level) observations.
+
+  ! 1/237: Dropsonde observations.
+
+  ! 292: SFMR observations.
+
+  ! The following correspond to the specific humidity (q)
+  ! observations:
+  
+  real(r_kind) :: q_doe_a_136, q_doe_b_136
+  real(r_kind) :: q_doe_a_137, q_doe_b_137
+
+  ! The following correspond to the temperature (t) observations:
+  
+  real(r_kind) :: t_doe_a_136, t_doe_b_136
+  real(r_kind) :: t_doe_a_137, t_doe_b_137
+
+  ! The following correspond to the wind (uv) observations:
+  
+  real(r_kind) :: uv_doe_a_236, uv_doe_b_236
+  real(r_kind) :: uv_doe_a_237, uv_doe_b_237
+  real(r_kind) :: uv_doe_a_292, uv_doe_b_292
+  
 contains
 
   subroutine init_obsmod_dflts
@@ -777,11 +871,11 @@ contains
                                ! related to brightness temperature and 
                                ! precipitation rate observations
 
-    grids_dim= 80              ! grid points for integration of GPS bend
-
     nprof_gps = 0
 
     hilbert_curve=.false.
+    neutral_stability_windfact_2dvar=.false.
+    use_similarity_2dvar=.false.
 
     obs_input_common = 'obs_input.common'
     lread_obs_save   = .false.
@@ -797,7 +891,48 @@ contains
     binary_diag = .true.  ! by default, do write binary diag
 
     l_wcp_cwm          = .false.                 ! .true. = use operator that involves cwm
+    aircraft_recon     = .false.                 ! .true. = use DOE for aircraft data
 
+    ! The following variable initializations pertain to the
+    ! coefficients that describe the linear regression fits that are
+    ! used to define the dynamic observation error (DOE)
+    ! specifications for all reconnissance observations collected
+    ! within hurricanes/tropical cyclones; these apply only to the
+    ! regional forecast models (e.g., HWRF); Henry R. Winterbottom
+    ! (henry.winterbottom@noaa.gov).
+
+    ! Observation types:
+    
+    ! 1/236: HDOB (e.g., flight-level) observations.
+    
+    ! 1/237: Dropsonde observations.
+    
+    ! 292: SFMR observations.
+    
+    ! The following correspond to the specific humidity (q)
+    ! observations:
+
+    q_doe_a_136 = 1.0_r_kind
+    q_doe_b_136 = 0.0_r_kind
+    q_doe_a_137 = 1.0_r_kind
+    q_doe_b_137 = 0.0_r_kind
+
+    ! The following correspond to the temperature (t) observations:
+
+    t_doe_a_136 = 1.0_r_kind
+    t_doe_b_136 = 0.0_r_kind
+    t_doe_a_137 = 1.0_r_kind
+    t_doe_b_137 = 0.0_r_kind    
+
+    ! The following correspond to the wind (uv) observations:
+
+    uv_doe_a_236 = 1.0_r_kind
+    uv_doe_b_236 = 0.0_r_kind
+    uv_doe_a_237 = 1.0_r_kind
+    uv_doe_b_237 = 0.0_r_kind      
+    uv_doe_a_292 = 1.0_r_kind
+    uv_doe_b_292 = 0.0_r_kind
+    
     return
   end subroutine init_obsmod_dflts
   
